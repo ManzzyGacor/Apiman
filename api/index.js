@@ -6,21 +6,19 @@ const bcrypt = require('bcryptjs');
 const cors = require('cors');
 const app = express();
 
-// --- 1. Konfigurasi Environment Variables (Wajib di Vercel Dashboard) ---
-// Nilai ini harus diatur di Vercel Project Settings > Environment Variables
-const DB_HOST = process.env.DB_HOST;
-const DB_USER = process.env.DB_USER;
-const DB_PASSWORD = process.env.DB_PASSWORD;
-const DB_NAME = process.env.DB_NAME; 
-const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:5500'; // Sesuaikan port lokal Anda
+// --- 1. Konfigurasi Kredensial Database MySQL ---
+// Host yang paling mungkin untuk koneksi eksternal dari Vercel:
+const DB_HOST = 'nilou.kawaiihost.net'; 
+const DB_USER = 'xhyboamd_manzzy'; 
+const DB_PASSWORD = 'Lukman@1l'; 
+const DB_NAME = 'xhyboamd_manzzy'; 
 
-if (!DB_HOST || !DB_USER || !DB_PASSWORD || !DB_NAME) {
-    console.error("FATAL ERROR: Database environment variables are missing.");
-    // Dalam production, Anda mungkin ingin app.use untuk mengirimkan 500 jika variabel hilang
-}
+// URL Frontend (Diambil dari Vercel Environment Variable, atau fallback untuk testing)
+const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:5500'; 
 
 
-// --- 2. Konfigurasi Database MySQL ---
+// --- 2. Konfigurasi Database Pool ---
+// Menggunakan pool koneksi untuk manajemen koneksi yang lebih baik di Serverless Functions
 const dbConfig = {
     host: DB_HOST,
     user: DB_USER,
@@ -28,15 +26,14 @@ const dbConfig = {
     database: DB_NAME,
     waitForConnections: true,
     connectionLimit: 10,
-    queueLimit: 0
+    queueLimit: 0 
 };
 
-let dbPool; // Menggunakan pool untuk Serverless Functions
+let dbPool; 
 
 async function getDatabasePool() {
     if (!dbPool) {
         try {
-            // Membuat pool koneksi
             dbPool = mysql.createPool(dbConfig);
             console.log('✅ MySQL Connection Pool created.');
             
@@ -53,8 +50,8 @@ async function getDatabasePool() {
             console.log('✅ Tabel users siap digunakan.');
         } catch (err) {
             console.error('❌ GAGAL koneksi/menyiapkan database:', err.message);
-            // Pada Vercel, lebih baik membiarkan request gagal
-            throw new Error('Database initialization failed.'); 
+            // Ini akan menyebabkan Vercel Function gagal jika database tidak dapat dijangkau
+            throw new Error('Database initialization failed. Check Remote MySQL access on nilou.kawaiihost.net'); 
         }
     }
     return dbPool;
@@ -65,8 +62,8 @@ async function getDatabasePool() {
 
 const allowedOrigins = [
     FRONTEND_URL, 
-    'http://localhost:3000', // Port default Node.js
-    'http://localhost:5500'  // Port default Live Server (jika Anda menggunakannya)
+    'http://localhost:3000', 
+    'http://localhost:5500' // Live Server
 ]; 
 
 const corsOptions = {
@@ -80,7 +77,7 @@ const corsOptions = {
 };
 
 app.use(cors(corsOptions));
-app.use(express.json()); // Parsing body JSON dari permintaan
+app.use(express.json());
 
 
 // --- 4. Endpoints Backend ---
@@ -100,7 +97,6 @@ app.post('/register', async (req, res) => {
         const salt = await bcrypt.genSalt(10);
         const hashedPassword = await bcrypt.hash(password, salt);
         
-        // Simpan ke database
         const query = 'INSERT INTO users (username, password_hash) VALUES (?, ?)';
         await pool.execute(query, [username, hashedPassword]);
         
@@ -126,7 +122,6 @@ app.post('/login', async (req, res) => {
     try {
         const pool = await getDatabasePool();
         
-        // Cari user
         const [rows] = await pool.execute('SELECT id, username, password_hash FROM users WHERE username = ?', [username]);
         const user = rows[0];
 
@@ -134,11 +129,10 @@ app.post('/login', async (req, res) => {
             return res.status(401).send({ message: 'Username atau password salah.' });
         }
 
-        // Bandingkan password
         const isMatch = await bcrypt.compare(password, user.password_hash);
 
         if (isMatch) {
-            // Login Berhasil! (Di aplikasi nyata, Anda akan membuat dan mengirimkan JWT di sini)
+            // Login Berhasil
             res.send({ message: `Login Berhasil.`, user: { id: user.id, username: user.username } });
         } else {
             res.status(401).send({ message: 'Username atau password salah.' });
@@ -152,6 +146,4 @@ app.post('/login', async (req, res) => {
 
 
 // --- 5. Export Aplikasi Express untuk Vercel ---
-// Ini adalah format yang dibutuhkan Vercel untuk menjalankan Serverless Function
-
 module.exports = app;
