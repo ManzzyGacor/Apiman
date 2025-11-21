@@ -6,34 +6,41 @@ const bcrypt = require('bcryptjs');
 const cors = require('cors');
 const app = express();
 
-// --- Konfigurasi Environment Variables ---
-// Gunakan process.env untuk mengambil variabel dari Vercel Dashboard (Production)
-// Ini adalah cara AMAN untuk menyimpan kredensial database.
+// --- 1. Konfigurasi Environment Variables (Wajib di Vercel Dashboard) ---
+// Nilai ini harus diatur di Vercel Project Settings > Environment Variables
+const DB_HOST = process.env.DB_HOST;
+const DB_USER = process.env.DB_USER;
+const DB_PASSWORD = process.env.DB_PASSWORD;
+const DB_NAME = process.env.DB_NAME; 
+const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:5500'; // Sesuaikan port lokal Anda
 
-const DB_HOST = process.env.DB_HOST || 'localhost';
-const DB_USER = process.env.DB_USER || 'root'; // GANTI DENGAN USER PRODUCTION ANDA
-const DB_PASSWORD = process.env.DB_PASSWORD || 'password_anda'; // GANTI DENGAN PASSWORD PRODUCTION ANDA
-const DB_NAME = process.env.DB_NAME || 'web_auth_db'; 
+if (!DB_HOST || !DB_USER || !DB_PASSWORD || !DB_NAME) {
+    console.error("FATAL ERROR: Database environment variables are missing.");
+    // Dalam production, Anda mungkin ingin app.use untuk mengirimkan 500 jika variabel hilang
+}
 
-// --- Konfigurasi Database MySQL ---
+
+// --- 2. Konfigurasi Database MySQL ---
 const dbConfig = {
     host: DB_HOST,
     user: DB_USER,
     password: DB_PASSWORD,
-    database: DB_NAME
+    database: DB_NAME,
+    waitForConnections: true,
+    connectionLimit: 10,
+    queueLimit: 0
 };
 
-let db;
+let dbPool; // Menggunakan pool untuk Serverless Functions
 
-// Fungsi untuk koneksi database (dipanggil sekali)
-async function getDatabaseConnection() {
-    if (!db) {
+async function getDatabasePool() {
+    if (!dbPool) {
         try {
-            // Membuat koneksi promise
-            db = await mysql.createConnection(dbConfig);
-            console.log('✅ Terhubung ke database MySQL!');
+            // Membuat pool koneksi
+            dbPool = mysql.createPool(dbConfig);
+            console.log('✅ MySQL Connection Pool created.');
             
-            // Memastikan tabel users ada (Hanya akan membuat jika belum ada)
+            // Memastikan tabel users ada
             const createTableQuery = `
                 CREATE TABLE IF NOT EXISTS users (
                     id INT AUTO_INCREMENT PRIMARY KEY,
@@ -42,32 +49,32 @@ async function getDatabaseConnection() {
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 );
             `;
-            await db.execute(createTableQuery);
+            await dbPool.execute(createTableQuery);
             console.log('✅ Tabel users siap digunakan.');
         } catch (err) {
             console.error('❌ GAGAL koneksi/menyiapkan database:', err.message);
-            // Pada Vercel, throw error agar fungsi berhenti
-            throw new Error('Database connection failed.'); 
+            // Pada Vercel, lebih baik membiarkan request gagal
+            throw new Error('Database initialization failed.'); 
         }
     }
-    return db;
+    return dbPool;
 }
 
 
-// --- Middleware ---
+// --- 3. Middleware (Termasuk CORS) ---
 
-// Ganti 'http://localhost:3000' dengan URL live frontend Anda (misal: 'https://domainanda.com')
 const allowedOrigins = [
-    'https://domainanda.com', // GANTI DENGAN DOMAIN LIVE FRONTEND ANDA
-    'http://localhost:3000' // Untuk testing lokal
+    FRONTEND_URL, 
+    'http://localhost:3000', // Port default Node.js
+    'http://localhost:5500'  // Port default Live Server (jika Anda menggunakannya)
 ]; 
 
 const corsOptions = {
     origin: function (origin, callback) {
-        if (!origin || allowedOrigins.indexOf(origin) !== -1) {
+        if (!origin || allowedOrigins.includes(origin)) {
             callback(null, true);
         } else {
-            callback(new Error('Not allowed by CORS'));
+            callback(new Error(`CORS policy blocks access from origin: ${origin}`));
         }
     }
 };
@@ -76,7 +83,7 @@ app.use(cors(corsOptions));
 app.use(express.json()); // Parsing body JSON dari permintaan
 
 
-// --- Endpoints Backend ---
+// --- 4. Endpoints Backend ---
 
 // Endpoint Pendaftaran (Register)
 app.post('/register', async (req, res) => {
@@ -87,21 +94,21 @@ app.post('/register', async (req, res) => {
     }
 
     try {
-        const connection = await getDatabaseConnection();
+        const pool = await getDatabasePool();
         
-        // Hashing Password
+        // Hashing Password (Keamanan Wajib!)
         const salt = await bcrypt.genSalt(10);
         const hashedPassword = await bcrypt.hash(password, salt);
         
         // Simpan ke database
         const query = 'INSERT INTO users (username, password_hash) VALUES (?, ?)';
-        await connection.execute(query, [username, hashedPassword]);
+        await pool.execute(query, [username, hashedPassword]);
         
         res.status(201).send({ message: 'Pendaftaran berhasil! Silakan Login.' });
 
     } catch (error) {
         if (error.code === 'ER_DUP_ENTRY') {
-            return res.status(409).send({ message: 'Username sudah digunakan. Coba yang lain.' });
+            return res.status(409).send({ message: 'Username sudah digunakan.' });
         }
         console.error('Error saat register:', error);
         res.status(500).send({ message: 'Terjadi kesalahan server saat pendaftaran.' });
@@ -117,10 +124,10 @@ app.post('/login', async (req, res) => {
     }
 
     try {
-        const connection = await getDatabaseConnection();
+        const pool = await getDatabasePool();
         
         // Cari user
-        const [rows] = await connection.execute('SELECT id, username, password_hash FROM users WHERE username = ?', [username]);
+        const [rows] = await pool.execute('SELECT id, username, password_hash FROM users WHERE username = ?', [username]);
         const user = rows[0];
 
         if (!user) {
@@ -131,8 +138,8 @@ app.post('/login', async (req, res) => {
         const isMatch = await bcrypt.compare(password, user.password_hash);
 
         if (isMatch) {
-            // Di sini Anda bisa membuat dan mengirimkan JWT
-            res.send({ message: `Selamat datang, ${user.username}! Login Berhasil.`, user: { id: user.id, username: user.username } });
+            // Login Berhasil! (Di aplikasi nyata, Anda akan membuat dan mengirimkan JWT di sini)
+            res.send({ message: `Login Berhasil.`, user: { id: user.id, username: user.username } });
         } else {
             res.status(401).send({ message: 'Username atau password salah.' });
         }
@@ -144,7 +151,7 @@ app.post('/login', async (req, res) => {
 });
 
 
-// --- Export Aplikasi Express untuk Vercel ---
-// Vercel akan menggunakan handler ini, BUKAN app.listen()
+// --- 5. Export Aplikasi Express untuk Vercel ---
+// Ini adalah format yang dibutuhkan Vercel untuk menjalankan Serverless Function
 
 module.exports = app;
