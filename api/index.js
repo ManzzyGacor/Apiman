@@ -1,166 +1,109 @@
 // File: api/index.js
 
 const express = require('express');
-const mysql = require('mysql2/promise');
+const mongoose = require('mongoose');
 const bcrypt = require('bcryptjs');
 const cors = require('cors');
+const jwt = require('jsonwebtoken'); // Import JWT
 const app = express();
 
-// --- 1. Kredensial Database MySQL (HARDCODED) ---
-// Pastikan host, user, dan password SAMA PERSIS seperti di hosting Anda.
-const DB_HOST = 'nilou.kawaiihost.net'; 
-const DB_USER = 'xhyboamd_manzzy'; 
-const DB_PASSWORD = 'Lukman@1l'; 
-const DB_NAME = 'xhyboamd_manzzy'; 
-const DB_PORT = 3306; // Port standar MySQL
+// --- Konfigurasi dan Kredensial (Sama seperti sebelumnya) ---
+const MONGO_URI = process.env.MONGO_URI; 
+const JWT_SECRET = process.env.JWT_SECRET || 'SUPER_RAHASIA_INI_WAJIB_DIGANTI'; // Ganti!
+const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:5500';
 
-// URL Frontend (Diambil dari Vercel Environment Variable, atau fallback untuk testing)
-const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:5500'; 
+// ... (connectDB function, UserSchema, User Model - sama seperti sebelumnya) ...
+// ... (Middleware CORS dan JSON - sama seperti sebelumnya) ...
 
-
-// --- 2. Konfigurasi Database Pool ---
-const dbConfig = {
-    host: DB_HOST,
-    user: DB_USER,
-    password: DB_PASSWORD,
-    database: DB_NAME,
-    port: DB_PORT, // Tambahkan port secara eksplisit
-    // Pengaturan pool untuk Serverless Functions
-    waitForConnections: true,
-    connectionLimit: 10,
-    queueLimit: 0 
-};
-
-let dbPool; 
-
-async function getDatabasePool() {
-    if (!dbPool) {
-        try {
-            // Coba membuat koneksi
-            const testConnection = await mysql.createConnection(dbConfig);
-            // Jika berhasil, tutup koneksi tes dan buat pool
-            await testConnection.end(); 
-            
-            dbPool = mysql.createPool(dbConfig);
-            console.log('✅ MySQL Connection Pool created and tested successfully.');
-            
-            // Memastikan tabel users ada
-            const createTableQuery = `
-                CREATE TABLE IF NOT EXISTS users (
-                    id INT AUTO_INCREMENT PRIMARY KEY,
-                    username VARCHAR(50) NOT NULL UNIQUE,
-                    password_hash VARCHAR(255) NOT NULL,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                );
-            `;
-            // Gunakan pool untuk mengeksekusi query
-            await dbPool.execute(createTableQuery);
-            console.log('✅ Tabel users siap digunakan.');
-        } catch (err) {
-            console.error('❌ GAGAL KONEKSI/MENYIAPKAN DATABASE: Pastikan Remote MySQL diaktifkan dan Host, User, Pass benar.', err.message);
-            // Tambahkan 500 status code response jika inisialisasi gagal
-            throw new Error(`DB_CONN_FAILED: ${err.message}`); 
-        }
-    }
-    return dbPool;
-}
+// --- Koneksi DB (Harus dipanggil di setiap endpoint Vercel) ---
+// ... (connectDB function dan User Model dari jawaban sebelumnya) ...
 
 
-// --- 3. Middleware (Termasuk CORS) ---
-
-const allowedOrigins = [
-    FRONTEND_URL, 
-    'http://localhost:3000', 
-    'http://localhost:5500' 
-]; 
-
-const corsOptions = {
-    origin: function (origin, callback) {
-        if (!origin || allowedOrigins.includes(origin)) {
-            callback(null, true);
-        } else {
-            callback(new Error(`CORS policy blocks access from origin: ${origin}`));
-        }
-    }
-};
-
-app.use(cors(corsOptions));
-app.use(express.json());
-
-
-// --- 4. Endpoints Backend ---
-
-// Tambahkan middleware untuk memastikan koneksi database tersedia sebelum memproses request
-app.use(async (req, res, next) => {
-    try {
-        await getDatabasePool(); // Coba inisialisasi pool jika belum ada
-        next();
-    } catch (error) {
-        console.error('FATAL DB ERROR:', error.message);
-        // Kirim response 503 Service Unavailable jika database mati
-        res.status(503).send({ message: 'Layanan Backend sementara tidak tersedia (Database Offline).' });
-    }
-});
-
-
-// Endpoint Pendaftaran (Register)
+// Endpoint Pendaftaran (Register) - Sama
 app.post('/register', async (req, res) => {
-    const { username, password } = req.body;
-    const pool = dbPool; // Pool sudah dijamin ada oleh middleware
-
-    if (!username || !password) {
-        return res.status(400).send({ message: 'Username dan password harus diisi.' });
-    }
-
+    // ... (Logika Register, gunakan User model dari Mongoose) ...
+    // Pastikan connectDB() dipanggil di awal endpoint
     try {
+        await connectDB();
+        // ... (Logika Register) ...
+        const { username, password } = req.body;
         const salt = await bcrypt.genSalt(10);
         const hashedPassword = await bcrypt.hash(password, salt);
-        
-        const query = 'INSERT INTO users (username, password_hash) VALUES (?, ?)';
-        await pool.execute(query, [username, hashedPassword]);
-        
+        const newUser = new User({ username, password: hashedPassword });
+        await newUser.save();
         res.status(201).send({ message: 'Pendaftaran berhasil! Silakan Login.' });
-
     } catch (error) {
-        if (error.code === 'ER_DUP_ENTRY') {
+        if (error.code === 11000) {
             return res.status(409).send({ message: 'Username sudah digunakan.' });
         }
-        console.error('Error saat register:', error);
         res.status(500).send({ message: 'Terjadi kesalahan server saat pendaftaran.' });
     }
 });
 
-// Endpoint Login (Sama seperti sebelumnya, menggunakan dbPool)
+// Endpoint Login (MODIFIKASI: Menghasilkan Token JWT)
 app.post('/login', async (req, res) => {
-    const { username, password } = req.body;
-    const pool = dbPool;
-
-    if (!username || !password) {
-        return res.status(400).send({ message: 'Username dan password harus diisi.' });
+    try {
+        await connectDB();
+    } catch (error) {
+        return res.status(503).send({ message: 'Layanan Database tidak tersedia.' });
     }
+    
+    const { username, password } = req.body;
 
     try {
-        const [rows] = await pool.execute('SELECT id, username, password_hash FROM users WHERE username = ?', [username]);
-        const user = rows[0];
+        const user = await User.findOne({ username });
 
         if (!user) {
             return res.status(401).send({ message: 'Username atau password salah.' });
         }
 
-        const isMatch = await bcrypt.compare(password, user.password_hash);
+        const isMatch = await bcrypt.compare(password, user.password);
 
         if (isMatch) {
-            res.send({ message: `Login Berhasil.`, user: { id: user.id, username: user.username } });
+            // --- 🔑 Generate JWT ---
+            const payload = { 
+                id: user._id, 
+                username: user.username 
+            };
+            
+            const token = jwt.sign(payload, JWT_SECRET, { expiresIn: '1h' }); // Token kadaluarsa dalam 1 jam
+
+            // Kirim token kembali ke frontend
+            res.send({ 
+                message: `Login Berhasil.`, 
+                token: token, // <-- Kirim token
+                user: { username: user.username } 
+            });
         } else {
             res.status(401).send({ message: 'Username atau password salah.' });
         }
 
     } catch (error) {
-        console.error('Error saat login:', error);
         res.status(500).send({ message: 'Terjadi kesalahan server saat login.' });
     }
 });
 
+// Endpoint Proteksi (Opsional: Contoh cara verifikasi token)
+app.get('/api/dashboard', (req, res) => {
+    const token = req.headers['x-auth-token'];
+    
+    if (!token) {
+        return res.status(401).send({ message: 'Akses Ditolak. Token tidak ditemukan.' });
+    }
 
-// --- 5. Export Aplikasi Express untuk Vercel ---
-module.exports = app;        
+    try {
+        const decoded = jwt.verify(token, JWT_SECRET);
+        // Token valid, kirim data
+        res.json({ 
+            message: 'Data Dashboard Berhasil dimuat!',
+            user: decoded.username,
+            serverTime: new Date()
+        });
+    } catch (error) {
+        // Token tidak valid atau kadaluarsa
+        res.status(401).send({ message: 'Token tidak valid atau kadaluarsa.' });
+    }
+});
+
+// --- Export Aplikasi Express untuk Vercel ---
+module.exports = app;
