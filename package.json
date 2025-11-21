@@ -1,9 +1,11 @@
 {
-  "version": 2,
-  "rewrites": [
-    {
-      "source": "/(.*)",
-      "destination": "/api/index.js"
-    }
-  ]
+  "name": "backend-manzzy",
+  "version": "1.0.0",
+  "main": "index.js",  
+  "scripts": {
+    "start": "node index.js" 
+  },
+  "dependencies": {
+    // ... (biarkan sama)
+  }
 }
